@@ -7,5 +7,7 @@
 (defsystem cl-serve
   :author "Arnold N'GORAN"
   :licence "LLGPL"
-  :components ((:file "cl-serve"))
+  :components ((:file "utils")
+	       (:file "cl-serve"
+		      :depends-on ("utils")))
   :depends-on (port cl-who))
