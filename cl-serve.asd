@@ -10,4 +10,4 @@
   :components ((:file "utils")
 	       (:file "cl-serve"
 		      :depends-on ("utils")))
-  :depends-on (port cl-who))
+  :depends-on (port cl-who cl-fad lisp-binary babel cl+ssl flexi-streams))

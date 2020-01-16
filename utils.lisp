@@ -1,5 +1,17 @@
 (defpackage :cl-serve.utils
-  (:use :cl))
+  (:use :cl :babel)
+  (:export :get-assoc-value
+	   :string-split
+	   :parse-key-val-string
+	   :make-sym-val-pair
+	   :list->dotted
+	   :http-char
+	   :pairp
+	   :copy-binary-file
+	   :copy-text-file
+	   :dotted-pair-p
+	   :safe-read-line
+	   :read-line-crlf))
 
 (in-package :cl-serve.utils)
 
@@ -38,7 +50,7 @@ e.g: (string-split \"arnold est non seulement beau mais innofensif\" \"no\") => 
 		      (if recursive-p
 			  (rec (subseq str len) ""
 			       (append res (list cur-str)))
-			  (append res (list cur-str str))))
+			  (append res (list cur-str (subseq str 1)))))
 		     (t (rec (subseq str 1)
 			     (concatenate 'string
 					  cur-str (subseq str 0 1))
@@ -48,8 +60,14 @@ e.g: (string-split \"arnold est non seulement beau mais innofensif\" \"no\") => 
 (defun make-sym-val-pair (lst fn)
   "Given a list `lst', return a dotted-pair where the CAR is the symbol corresponding to the string located at `(car lst)' and the CDR is the result of the application of the function `fn' (of one argument) to `(cdr lst)'."
   (let ((pair (list->dotted lst)))
-    (cons (intern (string-upcase (car pair)))
+    (cons (string-upcase (car pair))
 	  (funcall fn (cdr pair)))))
+
+(defun dotted-pair-p (x)
+  (and (consp x) (not (consp (cdr x)))))
+
+(defun pairp (x)
+  (and (consp x) (= (length x) 2)))
 
 (defun list->dotted (lst)
   "Given the 2 element list `lst', return a dotted list.
@@ -74,3 +92,38 @@ e.g: (parse-key-val-string (concatenate 'string \"name:arnold\" (coerce '(#\Newl
 			(cons (parse-one-line (car str))
 			      res)))))
       (rec str nil))))
+
+(defun copy-binary-file (from-path to-stream)
+  (with-open-file (from-stream from-path :direction :input :element-type '(unsigned-byte 8)
+			       :if-does-not-exist nil)
+    (when from-stream
+      (let ((buffer (make-array 8192 :element-type '(unsigned-byte 8))))
+	
+	(loop for bytes-read = (read-sequence buffer from-stream)
+	   while (plusp bytes-read)
+	   do (write-sequence buffer to-stream :end bytes-read))))))
+
+(defun copy-text-file (from-path to-stream)
+  (with-open-file (stream from-path :direction :input)
+    (cl-fad:copy-stream stream to-stream)))
+
+(defun safe-read-line (stream)
+  (coerce
+   (loop :for c = (read-byte stream nil nil)
+      :until (= c 10)
+      :collect (code-char c)
+      :do (print (code-char c)))
+   'string))
+
+(defun read-line-crlf (stream &optional eof-error-p)
+  (let ((s (make-string-output-stream)))
+    (loop
+       for empty = t then nil
+       for c = (read-char stream eof-error-p nil)
+       while (and c (not (eql c #\return)))
+       do
+	 (unless (eql c #\newline)
+	   (write-char c s))
+       finally
+	 (return
+	   (if empty nil (get-output-stream-string s))))))
