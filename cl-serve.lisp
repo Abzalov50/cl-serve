@@ -122,31 +122,30 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
 		   ,path)))     
        (set-dispatch-table!
 	path
-	(lambda (headers params)
-	  (let ((*standard-output* *socket-stream*))
+	(lambda (stream headers params)
 	    (declare (ignorable headers params))
-	    (print-resp-header
+	    (print-resp-header stream
 	     ,status :http-ver (get-assoc-value "HTTP-VER" headers)
 	     :content-type ,content-type)
-	    (terpri *socket-stream*)
+	    (terpri stream)
 	    (when (equal ,content-type "text/html")
 	      (progn
 		(when ,doctypep
 		  (progn
-		    (format *socket-stream* "~A~%"
+		    (format stream "~A~%"
 			    "<!DOCTYPE html>"))))) ; HTML 5
-	    ,@body))
+	    (format stream "~A" ,@body))
 	,status)))
 
-(defun parse-req-init-line ()
+(defun parse-req-init-line (stream)
   "Given the request initial line of the form \"REQ_TYPE URL HTTP_VERSION\", return 3 elements in the following order: URL REQ_TYPE HTTP_VERSION. Where URL is parsed and return of the form (DOMAIN_NAME . PARAMS). `PARAMS' might be nil if URL does not contain the character #\? .
 `REQ_TYPE' has one of the values `GET', `POST' and `HEAD'.
 e.g: (parse-req-init-line \"GET /home.html?name=arnold+ngoran&age=28 HTTP/1.1\") => (\"home.html\" (NAME . \"arnold ngoran\") (AGE . \"28\")) 
 \"GET\" 
 \"HTTP/1.1\""
   (let* (
-	 ;;(req-line (safe-read-line *socket-stream*))
-	 (req-line (read-line *socket-stream* nil nil))
+	 ;;(req-line (safe-read-line *socket-stream*))	 
+	 (req-line (read-line stream nil nil))  ; ##### FIXME hanging
 	 (lst (string-split req-line #\Space)))
 	(print req-line)
 	(if (< (length lst) 2)
@@ -167,7 +166,7 @@ e.g: (parse-req-init-line \"GET /home.html?name=arnold+ngoran&age=28 HTTP/1.1\")
 ;;; .................
 ;;; header_N: value_N
 ;;; Two consecutive header lines are separated by a new line
-(defun parse-req-headers ()
+(defun parse-req-headers (stream)
   "Return list of dotted-pairs where each car is the header's key (as Lisp symbol) and each cdr is the header's value, in the order that they appear in the stream.
 e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline) 'string) \"age:28\")) => ((AGE . \"28\") (NAME . \"arnold\"))."
   (print "PARSE-REQ-HEADERS")
@@ -175,18 +174,18 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	     (make-sym-val-pair
 	      hdr #'(lambda (x) (string-trim '(#\Space #\Return) x))))
 	   (rec (res)
-	     (let ((c (peek-char nil *socket-stream*)))
-	       (cond ((find c '(#\Newline #\Return #\Linefeed) :test #'char=)
-		      (read-char *socket-stream* nil nil)
+	     (let ((c (peek-char nil stream)))
+	       (cond ((find c '(#\Newline #\Return #\Linefeed)
+			    :test #'char=)
+		      (read-char stream nil nil)
 		      (values 'success res))
 		     ((not (alpha-char-p c))
 		      (signal 'not-decodable-char)
 		      (values 'error nil))
 		     (t
-		      (let* ((hline (read-line *socket-stream* nil ""))
-			     (hdr-lst (string-split hline #\: :recursive-p nil)))
-			;;(print hline)
-			;;(print hdr-lst)
+		      (let* ((hline (read-line stream nil ""))
+			     (hdr-lst (string-split hline #\:
+						    :recursive-p nil)))
 			(if (not (pairp hdr-lst))
 			    (values 'success res)
 			    (rec (cons (parse-one-line hdr-lst)
@@ -197,7 +196,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 ;;; and eventually uploaded files.
 ;;; The body is of the same form as the headers,
 ;;; that is lines of key:values separated by a new line.
-(defun parse-req-body (headers)
+(defun parse-req-body (stream headers)
   ;; If there is a request body, there should be a `CONTENT-LENGTH'
   ;; header line.
   (let ((content-line (assoc 'content-length headers)))
@@ -205,12 +204,12 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
       ;; TODO: Content is not necessarily a string
       (let ((content (make-string
 		      (parse-integer (cdr content-line)))))
-	(read-sequence content *socket-stream*)
+	(read-sequence content stream)
 	;; When of type `string', content might have the same form
 	;; as URI params, so let's parse it to get a nice assoc list.
 	(parse-uri-params content)))))
 
-(defun print-resp-header (status &key http-ver
+(defun print-resp-header (stream status &key http-ver
 				   (content-type "text/html"))
   "Print the response header, which comes before the response body. It is required for the browser to interpret the body and render it properly."
   (let ((status (get-statuscode-string status))
@@ -222,36 +221,38 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 				       content-type
 				       "; charset=utf-8")
 			  content-type)))
-    (format *socket-stream* "~A ~A~%" http-ver status)
-    (format *socket-stream* "Content-Type: ~A~%" content-type)))
+    (format stream "~A ~A~%" http-ver status)
+    (format stream "Content-Type: ~A~%" content-type)))
 
 (defun static-p (ftype)
   (not (or (equal ftype "text/html")
 	   (equal ftype "*/*"))))
 
-(defun print-error-resp (headers params)
+(defun print-error-resp (stream headers params)
   (print "Invalid Request | Returned 404.html page")
   (funcall (get-assoc-value "not-found" *error-dispatch-table*)
-	   headers params))
+	   stream headers params))
 
-(defun print-resp-body-file (path accept-type)
+(defun print-resp-body-file (stream path accept-type)
   ;;(declare (ignore content-type))  ; for now
   (if (equal accept-type "text")
-      (with-lock (*listener-lock*) (copy-text-file path *socket-stream*))
-      (with-lock (*listener-lock*) (copy-binary-file path *socket-stream*))))
+      (with-lock (*listener-lock*) (copy-text-file path stream))
+      (with-lock (*listener-lock*) (copy-binary-file path stream))))
 
-(defun print-static-resp (accept path headers)
+(defun print-static-resp (stream accept path headers)
   (let* ((local-path (merge-pathnames path *static-dir*))
 	 (file (probe-file local-path))
 	 (http-ver (get-assoc-value "HTTP-VER" headers))
 	 (status-code (if file "success" "not-found"))
-	 (accept-type (car (string-split accept "/" :recursive-p nil))))
+	 (accept-type (car (string-split accept "/"
+					 :recursive-p nil))))
     (if (and (cl-fad:file-exists-p local-path)
 	     (not (cl-fad:directory-pathname-p local-path)))
 	(progn
-	  (print-resp-header status-code :http-ver http-ver :content-type accept)
-	  (terpri *socket-stream*)
-	  (print-resp-body-file local-path accept-type)
+	  (print-resp-header stream status-code
+			     :http-ver http-ver :content-type accept)
+	  (terpri stream)
+	  (print-resp-body-file stream local-path accept-type)
 	  t)
 	nil)))
 
@@ -268,30 +269,28 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
       (setf handler (get-assoc-value path *error-dispatch-table*)))
     handler))
 
-(defun get-resource (path headers params)
+(defun get-resource (stream path headers params)
   (let* ((content-type (get-assoc-value "CONTENT-TYPE" headers))
 	 (accept (car (string-split (get-assoc-value "ACCEPT" headers)
 				    "," :recursive-p nil)))
 	 (handler (find-req-handler path)))
-    (cond (handler (funcall handler headers params))
+    (cond (handler (funcall handler stream headers params))
 	  ((and (or (static-p accept) (static-p content-type))
-		(print-static-resp accept path headers)))
-	  (t (print-error-resp headers params)))))
+		(print-static-resp stream accept path headers)))
+	  (t (print-error-resp stream headers params)))))
 
-(defun parse-request ()
+(defun parse-request (stream)
   ;; The first line is the request initial line
   (print "Parsing REQ LINE")
   (multiple-value-bind (error-code url req-type http-ver)
-      (parse-req-init-line)
-    ;;(declare (ignore req-type http-ver)) ; To consider later
-    ;;(print "Parsing REQ HEADERS")
+      (parse-req-init-line stream)
     (if (eq error-code 'error)
 	(values 'error nil nil nil)
 	(let* ((path (car url))
 	       (uri-params (cdr url)))
 	  (multiple-value-bind (error-code headers)	       
 	       ;; The following lines are headers
-	      (parse-req-headers)
+	      (parse-req-headers stream)
 	    (if (eq error-code 'error)
 		(values 'error nil nil nil)
 		(let* ((headers (cons (cons "REQ-TYPE" req-type)
@@ -299,117 +298,117 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		       (headers (cons (cons "HTTP-VER" http-ver)
 				      headers))
 		       ;; The following lines are body content
-		       (body (parse-req-body headers))
+		       (body (parse-req-body stream headers))
 		       ;; Build all params
 		       (params (append uri-params body)))
 		  (values 'success path headers params))))))))
 
 (defun process-request (stream)
-  (print "Process request...")
-  (setf *socket-stream* stream)
-  ;;(print *socket-stream*)
-  (multiple-value-bind (error-code path headers params)
-      (parse-request)
-    ;;(let ((*standard-output* stream))
-    (if (eq error-code 'error)
-	(print "Bad request")
-	(let ((req-type (get-assoc-value "REQ-TYPE" headers)))
-	  (print headers)
-	  (cond ((equal req-type "GET")
-		 (get-resource path headers params))
-		(t (print "/!\\ Request type not yet supported.")))))))
+  (print "Process request...")  
+  (block main-loop
+    (restart-case
+	(handler-bind
+	    ((not-decodable-char
+	      #'(lambda (c)
+		  (format t "~&/!\\ ~A" c)
+		  (return-from main-loop)))
+	     (sb-int:simple-stream-error
+	      #'(lambda (ex)
+		  (invoke-restart 'print-error-and-continue ex)
+		  (return-from main-loop)))
+	     (sb-int:stream-decoding-error
+	      #'(lambda (ex)
+		  (invoke-restart 'print-error-and-continue ex)
+		  (return-from main-loop)))
+	     (cl+ssl::ssl-error
+	      #'(lambda (ex)
+		  (invoke-restart 'print-error-and-continue ex)
+		  (return-from main-loop))))
+	  (unwind-protect
+	       (multiple-value-bind
+		     (error-code path headers params)
+		   ;; READ REQUEST FROM STREAM
+		   (parse-request stream)
+		 ;; WRITE RESPONSE TO STREAM
+		 (if (eq error-code 'error)
+		     (print "Bad request")
+		     (let ((req-type
+			    (get-assoc-value "REQ-TYPE"
+					     headers)))
+		       ;;(print headers)
+		       (cond ((equal req-type "GET")
+			      (get-resource stream path
+					    headers params))
+			     (t
+			      (print "/!\\ Request type not yet supported.")))))
+		 (force-output stream))
+	    (close stream)))
+      (print-error-and-continue (ex)
+	(format t "~&/!\\ Error~%: ~A" ex)
+	(print "Execution continues...")))))
 
 (defun run-listener (&optional (socket *socket*) &key cert privkey)
-    (with-open-socket (sock socket)      
-	  (loop
-	     (block main-loop
-	       (restart-case
-		   (handler-bind ((not-decodable-char
-				   #'(lambda (c)
-				       (format t "~&/!\\ ~A" c)
-				       (return-from main-loop)))
-				  (sb-int:simple-stream-error
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop)))
-				  (sb-int:stream-decoding-error
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop)))
-				  (cl+ssl::ssl-error-syscall
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop)))
-				  (cl+ssl::ssl-error-ssl
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop)))
-				  (cl+ssl::ssl-error
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop)))
-				  (flexi-streams:external-format-encoding-error
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop))))
-		     (with-open-stream
-			 (stream (ignore-errors (socket-accept sock)))
-		       (terpri)
-		       (print "#################################")
-		       (print "Running Listener...")
-		       ;;(print cert)
-		       ;;(print privkey)
-		       (when (and cert privkey)
-			 (setf stream (cl+ssl:make-ssl-server-stream
-				       stream
-				       :external-format '(:utf-8 :eol-style :crlf)
-				       :certificate (namestring cert)
-				       :key (namestring privkey))))
-		       ;;(print (read-char stream))
-		       ;;(print stream)
-		       (process-request stream)
-		       ;;(print (eof-p stream))
-		       (finish-output stream)
-		       ;(clear-input stream)
-		       ;;(print (eof-p stream))
-		       ))
-		 (print-error-and-continue (ex)
-		   (format t "~&/!\\ Error~%: ~A" ex)
-		   (print "Execution continues...")))))))
+  (with-open-socket (sock socket)
+    (loop
+       (let* ((socket-stream (ignore-errors (socket-accept sock)))
+	      (socket
+	       (ignore-errors
+		 (cl+ssl:make-ssl-server-stream
+		  socket-stream
+		  :external-format '(:utf-8 :eol-style :crlf)
+		  :certificate (namestring cert)
+		  :key (namestring privkey)))))
+	 (when socket
+	   (terpri)
+	   (print "#################################")
+	   (print "Running Listener...")
+	   (make-process "process-request"
+			 #'process-request socket))))))
 
-(defun run-listener-80 (&optional (socket *socket*) &key cert privkey)
-    (with-open-socket (sock socket)      
-      (loop
-	 (block main-loop
-	       (restart-case
-		   (handler-bind ((sb-int:simple-stream-error
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop)))
-				  (sb-int:stream-decoding-error
-				   #'(lambda (ex)
-				       (invoke-restart 'print-error-and-continue ex)
-				       (return-from main-loop))))
-		     (with-open-stream
-			 (stream (socket-accept sock))
-		       (terpri)
-		       (print "#################################")
-		       (print "Running Listener HTTP:80...")		       
-		       (let ((*socket-stream* stream))
-			 (multiple-value-bind (error-code url req-type http-ver)
-			     (parse-req-init-line)
-			   ;;(clear-input *socket-stream*)
-			   (let ((path (car url))
-				 (http-ver (string-right-trim '(#\Return) http-ver)))
-			     (when (equal req-type "GET")
-			       (print "Redirect to HTTPS:443...")
-			       (format *socket-stream* "~A ~A~%" http-ver "301 Moved Permanently")
-			       (format *socket-stream* "Location: https://netersys.com/~A~%" path)
-			       (terpri *socket-stream*)))))))
-		 (print-error-and-continue (ex)
-		   (format t "~&/!\\ Error~%: ~A" ex)
-		   (print "Execution continues...")))))))
-		 
+(defun run-listener-80 (&optional (socket *socket*))
+  (with-open-socket (sock socket)
+    (loop
+       (let ((socket (ignore-errors (socket-accept sock))))
+	 (terpri)
+	 (print "#################################")
+	 (print "Running Listener HTTP:80...")
+	 (format t "> Received request from host ~a~%"
+		 (socket-host/port socket))
+	 (make-process "redirect-to-443"
+		       #'redirect-to-443 socket)))))
+
+(defun redirect-to-443 (socket)
+  (block main-loop
+    (restart-case
+	(handler-bind
+	    ((sb-int:simple-stream-error
+	      #'(lambda (ex)
+		  (invoke-restart
+		   'print-error-and-continue ex)
+		  (return-from main-loop)))
+	     (sb-int:stream-decoding-error
+	      #'(lambda (ex)
+		  (invoke-restart
+		   'print-error-and-continue ex)
+		  (return-from main-loop))))
+	  (unwind-protect
+	       (multiple-value-bind (error-code url req-type http-ver)
+		   (parse-req-init-line socket)
+		 (let ((path (car url))
+		       (http-ver (string-right-trim
+				  '(#\Return) http-ver)))
+		   (when (equal req-type "GET")
+		     (print "Redirect to HTTPS:443...")
+		     (format socket "~A ~A~%"
+			     http-ver "301 Moved Permanently")
+		     (format socket
+			     "Location: https://netersys.com/~A~%"
+			     path)		     
+		     (force-output socket))))
+	    (close socket)))
+      (print-error-and-continue (ex)
+	(format t "~&/!\\ Error~%: ~A" ex)
+	(print "Execution continues...")))))		 
 
 (defun start (&key (port 8080) (host "localhost") cert privkey)
   (setf *socket* (open-socket-server port)
@@ -420,7 +419,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
   (setf *socket-process*
 	(make-process "listener" #'run-listener *socket* :cert cert :privkey privkey))
   (setf *socket-process-80*
-	(make-process "listener-80" #'run-listener-80 *socket-80* :cert cert :privkey privkey))
+	(make-process "listener-80" #'run-listener-80 *socket-80*))
   *socket*)
 
 (defun stop (&optional (socket *socket*))
@@ -430,5 +429,3 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
     (kill-process *socket-process*))
   (when (process-active-p *socket-process-80*)
     (kill-process *socket-process-80*)))
-
-
