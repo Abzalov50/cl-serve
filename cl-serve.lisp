@@ -27,6 +27,8 @@
 ;;;; Global parameters
 (defvar *socket* nil)
 (defvar *socket-80* nil)
+(defvar *proc-80* nil)
+(defvar *proc* nil)
 (defvar *socket-stream* nil)
 (defvar *listener-lock* (make-lock :name "listener-lock"))
 (defvar *active-listeners* nil)
@@ -34,12 +36,54 @@
 (defvar *socket-process* nil)
 (defvar *socket-process-80* nil)
 (defvar *dispatch-table* nil)
+
 (defvar *status-code-database*
-  '(("success" . "200 OK")
+  '(
+    ;; 1xx: Informational - Request received, continuing process
+    ("continue" . "100 Continue")
+    ("switch-proto" . "101 Switching Protocols")
+    ;; 2xx: Success - The action was successfully received, understood, and accepted
+    ("success" . "200 OK")
+    ("created" . "201 Created")
+    ("accepted" . "202 Accepted")
+    ("nonauth-info" . "203 Non-Authoritative Information")
+    ("no-content" . "204 No Content")
+    ("reset-content" . "205 Reset Content")
+    ("partial-content" . "206 Partial Content")
+    ;; 3xx: Redirection - Further action must be taken in order to complete the request
+    ("mult-choice" . "300 Multiple Choices")
     ("moved-perm" . "301 Moved Permanently")
+    ("found" . "302 Found")
     ("see-other" . "303 See Other")
+    ("not-modif" . "304 Not Modified")
+    ("use-proxy" . "305 Use Proxy")
+    ("temp-redirect" . "307 Temporary Redirect")
+    ;; 4xx: Client Error - The request contains bad syntax or cannot be fulfilled
+    ("bad-req" . "400 Bad Request")
+    ("unauth" . "401 Unauthorized")
+    ("pay-required" . "402 Payment Required")
+    ("forbidden" . "403 Forbidden")
     ("not-found" . "404 Not Found")
-    ("server-error" . "500 Server Error")))
+    ("not-allowed" . "405 Method Not Allowed")
+    ("not-accept" . "406 Not Acceptable")
+    ("proxy-auth" . "407 Proxy Authentication Required")
+    ("req-timeout" . "408 Request Time-out")
+    ("conflict" . "409 Conflict")
+    ("gone" . "410 Gone")
+    ("len-required" . "411 Length Required")
+    ("precond-failed" . "412 Precondition Failed")
+    ("reqent-too-large" . "413 Request Entity Too Large")
+    ("uri-too-large" . "414 Request-URI Too Large")
+    ("unsupp-media-type" . "415 Unsupported Media Type")
+    ("range-not-satisf" . "416 Requested range not satisfiable")
+    ("expect-failed" . "417 Expectation Failed")
+    ;; 5xx: Server Error - The server failed to fulfill an apparently valid request
+    ("server-error" . "500 Internal Server Error")
+    ("not-implemented" . "501 Not Implemented")
+    ("bad-gateway" . "502 Bad Gateway")
+    ("unavailable" . "503 Service Unavailable")
+    ("gateway-timeout" . "504 Gateway Time-out")
+    ("httpver-bad" . "505 HTTP Version not supported")))
 (defvar *error-dispatch-table* nil)
 (defvar *project-dir* nil)
 (defvar *static-dir* nil)
@@ -80,25 +124,27 @@ e.g: (parse-uri-params \"name=arnold%20ngoran&age=28\") => ((NAME . \"arnold ngo
 			      (pair (if (= (length lst) 1)
 					(list (car lst) "no-value")
 					lst))
-			      (dotted-pair  (make-sym-val-pair
-				     pair #'parse-uri-pvalue)))
+			      (dotted-pair
+			       (make-sym-val-pair pair
+						  #'parse-uri-pvalue)))
 			 (rec (cdr param-lst)
-			      (append res (list pair)))))))
+			      (append res (list dotted-pair)))))))
 	  (rec param-lst nil)))))
 
 (defun parse-uri-pvalue (pval)
   "Given URI parameter value `pval' of the form ((%[0-9 0-9])?[0-9a-zA-Z+])*, return `pval' where HTTP symbols are transformed into normal UTF-8 characters.
 e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
   (let ((pval-lst (coerce pval 'list)))
-    (labels ((rec (lst)
+    (labels ((rec (lst result)
 	       (if (null lst)
-		   nil
+		   (nreverse result)
 		   (case (car lst)
-		     (#\% (cons (http-char (cadr lst) (caddr lst))
-				(rec (cdddr lst))))
-		     (#\+ (cons #\Space (rec (cdr lst))))
-		     (t (cons (car lst) (rec (cdr lst))))))))
-      (coerce (rec pval-lst) 'string))))
+		     (#\% (rec (cdddr lst)
+			       (cons (http-char (cadr lst) (caddr lst))
+				     result)))
+		     (#\+ (rec (cdr lst) (cons #\Space result)))
+		     (t (rec (cdr lst) (cons (car lst) result)))))))
+      (coerce (rec pval-lst nil) 'string))))
 
 (defmacro helper-set! (path fn table)
   `(typecase ,table
@@ -110,8 +156,8 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
 (defmacro set-dispatch-table! (path fn status)
   (if (equal status "success")
       `(helper-set! ,path ,fn *dispatch-table*)
-      `(helper-set! ,path ,fn *error-dispatch-table*)))  
-	 
+      `(helper-set! ,path ,fn *error-dispatch-table*)))
+
 (defmacro defhandler ((path &key (doctypep t)
 			    (content-type "text/html")
 			    (status "success"))
@@ -128,13 +174,15 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
 	     ,status :http-ver (get-assoc-value "HTTP-VER" headers)
 	     :content-type ,content-type)
 	    (terpri stream)
-	    (when (equal ,content-type "text/html")
-	      (progn
-		(when ,doctypep
-		  (progn
-		    (format stream "~A~%"
-			    "<!DOCTYPE html>"))))) ; HTML 5
-	    (format stream "~A" ,@body))
+	    (cond ((equal ,content-type "text/html")
+		   (progn
+		     (when ,doctypep
+		       (progn
+			 (format stream "~A~%"
+				 "<!DOCTYPE html>"))) ; HTML 5
+		     (format stream "~A" ,@body)))
+		  ((equal ,content-type "lambda")
+		   ,@body)))
 	,status)))
 
 (defun parse-req-init-line (stream)
@@ -148,9 +196,13 @@ e.g: (parse-req-init-line \"GET /home.html?name=arnold+ngoran&age=28 HTTP/1.1\")
 	 (req-line (read-line stream nil nil))  ; ##### FIXME hanging
 	 (lst (string-split req-line #\Space)))
 	(print req-line)
-	(if (< (length lst) 2)
+	(if (< (length lst) 3)
 	    (values 'error nil nil nil)
-	    (let* ((url (subseq (cadr lst) 1)) ; Skip the initial #\ character
+	    (let* ((abs-url (cadr lst))
+		   ;; Skip the initial #\/ character
+		   (url (if (string-equal (subseq abs-url 0 1) "/")
+			    (subseq abs-url 1)
+			    abs-url))
 		   (url-broken (string-split url #\?))
 		   (url-brkn-parsed (cons (car url-broken)
 					  (parse-uri-params (cadr url-broken)))))
@@ -177,7 +229,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	     (let ((c (peek-char nil stream)))
 	       (cond ((find c '(#\Newline #\Return #\Linefeed)
 			    :test #'char=)
-		      (read-char stream nil nil)
+		      (read-line stream nil nil)
 		      (values 'success res))
 		     ((not (alpha-char-p c))
 		      (signal 'not-decodable-char)
@@ -199,7 +251,8 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 (defun parse-req-body (stream headers)
   ;; If there is a request body, there should be a `CONTENT-LENGTH'
   ;; header line.
-  (let ((content-line (assoc 'content-length headers)))
+  (let ((content-line (assoc "CONTENT-LENGTH" headers
+			     :test #'equal)))
     (when content-line
       ;; TODO: Content is not necessarily a string
       (let ((content (make-string
@@ -236,8 +289,11 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 (defun print-resp-body-file (stream path accept-type)
   ;;(declare (ignore content-type))  ; for now
   (if (equal accept-type "text")
-      (with-lock (*listener-lock*) (copy-text-file path stream))
-      (with-lock (*listener-lock*) (copy-binary-file path stream))))
+      ;;(with-lock (*listener-lock*) (copy-text-file path stream))
+      ;;(with-lock (*listener-lock*) (copy-binary-file path stream))
+      (copy-text-file path stream)
+      (copy-binary-file path stream))
+  )
 
 (defun print-static-resp (stream accept path headers)
   (let* ((local-path (merge-pathnames path *static-dir*))
@@ -310,20 +366,19 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	(handler-bind
 	    ((not-decodable-char
 	      #'(lambda (c)
-		  (format t "~&/!\\ ~A" c)
-		  (return-from main-loop)))
+		  (format t "~&/!\\ Error:~%~A" c)))
 	     (sb-int:simple-stream-error
 	      #'(lambda (ex)
-		  (invoke-restart 'print-error-and-continue ex)
-		  (return-from main-loop)))
+		  (invoke-restart 'print-error-and-continue ex)))
+	     (sb-sys:io-timeout
+	      #'(lambda (ex)
+		  (invoke-restart 'print-error-and-continue ex)))
 	     (sb-int:stream-decoding-error
 	      #'(lambda (ex)
-		  (invoke-restart 'print-error-and-continue ex)
-		  (return-from main-loop)))
+		  (invoke-restart 'print-error-and-continue ex)))
 	     (cl+ssl::ssl-error
 	      #'(lambda (ex)
-		  (invoke-restart 'print-error-and-continue ex)
-		  (return-from main-loop))))
+		  (invoke-restart 'print-error-and-continue ex))))
 	  (unwind-protect
 	       (multiple-value-bind
 		     (error-code path headers params)
@@ -336,7 +391,8 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 			    (get-assoc-value "REQ-TYPE"
 					     headers)))
 		       ;;(print headers)
-		       (cond ((equal req-type "GET")
+		       (cond ((or (equal req-type "GET")
+				  (equal req-type "POST"))
 			      (get-resource stream path
 					    headers params))
 			     (t
@@ -344,13 +400,14 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		 (force-output stream))
 	    (close stream)))
       (print-error-and-continue (ex)
-	(format t "~&/!\\ Error~%: ~A" ex)
+	(format t "~&/!\\ Error:~%~A" ex)
 	(print "Execution continues...")))))
 
-(defun run-listener (&optional (socket *socket*) &key cert privkey)
-  (with-open-socket (sock socket)
+(defun run-listener (&key cert privkey)
+  (setf *socket-serv* (open-socket-server 443))
+  (unwind-protect
     (loop
-       (let* ((socket-stream (ignore-errors (socket-accept sock)))
+       (let* ((socket-stream (socket-accept *socket-serv*))
 	      (socket
 	       (ignore-errors
 		 (cl+ssl:make-ssl-server-stream
@@ -362,20 +419,32 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	   (terpri)
 	   (print "#################################")
 	   (print "Running Listener...")
-	   (make-process "process-request"
-			 #'process-request socket))))))
+	   (push
+	    (make-process "process-request"
+			  #'process-request socket)
+	    *proc*)
+	   (when (= 100 (length *proc*))
+	     (setf *proc* nil)))))
+    (socket-server-close *socket-serv*)))
 
-(defun run-listener-80 (&optional (socket *socket*))
-  (with-open-socket (sock socket)
+(defun run-listener-80 ()
+  (setf *socket-serv-80* (open-socket-server 80))
+  (unwind-protect
     (loop
-       (let ((socket (ignore-errors (socket-accept sock))))
-	 (terpri)
-	 (print "#################################")
-	 (print "Running Listener HTTP:80...")
-	 (format t "> Received request from host ~a~%"
-		 (socket-host/port socket))
-	 (make-process "redirect-to-443"
-		       #'redirect-to-443 socket)))))
+       (let ((socket (socket-accept *socket-serv-80*)))
+	 (when socket
+	   (terpri)
+	   (print "#################################")
+	   (print "Running Listener HTTP:80...")
+	   (format t "~&> Received request from host ~a~%"
+		   (socket-host/port socket))
+	   (push
+	    (make-process "redirect-to-443"
+			  #'redirect-to-443 socket)
+	    *proc-80*)
+	   (when (= 100 (length *proc-80*))
+	     (setf *proc-80* nil)))))
+    (socket-server-close *socket-serv-80*)))
 
 (defun redirect-to-443 (socket)
   (block main-loop
@@ -384,13 +453,15 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	    ((sb-int:simple-stream-error
 	      #'(lambda (ex)
 		  (invoke-restart
-		   'print-error-and-continue ex)
-		  (return-from main-loop)))
+		   'print-error-and-continue ex)))
 	     (sb-int:stream-decoding-error
 	      #'(lambda (ex)
 		  (invoke-restart
-		   'print-error-and-continue ex)
-		  (return-from main-loop))))
+		   'print-error-and-continue ex)))
+	     (sb-sys:io-timeout
+	      #'(lambda (ex)
+		  (invoke-restart
+		   'print-error-and-continue ex))))
 	  (unwind-protect
 	       (multiple-value-bind (error-code url req-type http-ver)
 		   (parse-req-init-line socket)
@@ -410,22 +481,15 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	(format t "~&/!\\ Error~%: ~A" ex)
 	(print "Execution continues...")))))		 
 
-(defun start (&key (port 8080) (host "localhost") cert privkey)
-  (setf *socket* (open-socket-server port)
-	*socket-80* (open-socket-server 80)
-	*host* host)
+(defun start (&key cert privkey)
   ;; Create a parallel thread (or process)
   ;; where to listen to request and response.
-  (setf *socket-process*
-	(make-process "listener" #'run-listener *socket* :cert cert :privkey privkey))
-  (setf *socket-process-80*
-	(make-process "listener-80" #'run-listener-80 *socket-80*))
-  *socket*)
+  (make-process "listener" #'run-listener :cert cert :privkey privkey)
+  (make-process "listener-80" #'run-listener-80))
 
-(defun stop (&optional (socket *socket*))
+(defun stop ()
   "Stop the given `socket', otherwise stop the current one, defined by the global variable *socket*."
-  (socket-server-close socket)
-  (when (process-active-p *socket-process*)
-    (kill-process *socket-process*))
-  (when (process-active-p *socket-process-80*)
-    (kill-process *socket-process-80*)))
+  (print *socket-serv*)
+  (print *socket-serv-80*)
+  (socket-server-close *socket-serv*)
+  (socket-server-close *socket-serv-80*))
