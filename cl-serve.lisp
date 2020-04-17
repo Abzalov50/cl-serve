@@ -427,7 +427,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	     (setf *proc* nil)))))
     (socket-server-close *socket-serv*)))
 
-(defun run-listener-80 ()
+(defun run-listener-80 (domain)
   (setf *socket-serv-80* (open-socket-server 80))
   (unwind-protect
     (loop
@@ -440,13 +440,13 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		   (socket-host/port socket))
 	   (push
 	    (make-process "redirect-to-443"
-			  #'redirect-to-443 socket)
+			  #'redirect-to-443 socket domain)
 	    *proc-80*)
 	   (when (= 100 (length *proc-80*))
 	     (setf *proc-80* nil)))))
     (socket-server-close *socket-serv-80*)))
 
-(defun redirect-to-443 (socket)
+(defun redirect-to-443 (socket domain)
   (block main-loop
     (restart-case
 	(handler-bind
@@ -473,19 +473,19 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		     (format socket "~A ~A~%"
 			     http-ver "301 Moved Permanently")
 		     (format socket
-			     "Location: https://netersys.com/~A~%"
-			     path)		     
+			     "Location: https://~A/~A~%"
+			     domain path)		     
 		     (force-output socket))))
 	    (close socket)))
       (print-error-and-continue (ex)
 	(format t "~&/!\\ Error~%: ~A" ex)
 	(print "Execution continues...")))))		 
 
-(defun start (&key cert privkey)
+(defun start (domain &key cert privkey)
   ;; Create a parallel thread (or process)
   ;; where to listen to request and response.
   (make-process "listener" #'run-listener :cert cert :privkey privkey)
-  (make-process "listener-80" #'run-listener-80))
+  (make-process "listener-80" #'run-listener-80 domain))
 
 (defun stop ()
   "Stop the given `socket', otherwise stop the current one, defined by the global variable *socket*."
