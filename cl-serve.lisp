@@ -1,17 +1,25 @@
 (defpackage :cl-serve
   (:nicknames :websrv)
   (:use :cl :port :cl-serve.utils :cl-fad :lisp-binary :cl+ssl :flexi-streams)
-  (:export :*socket-stream*
+  (:export :*domain*
+	   :*subdomains*
+	   :*notfound-handler*
+	   :*socket-stream*
 	   :*socket*
 	   :*socket-80*
 	   :*host*
 	   :*dispatch-table*
 	   :*error-dispatch-table*
+	   :*all-dispatch-table*
+	   :*all-error-dispatch-table*
 	   :*status-code-database*
 	   :*project-dir*
 	   :*static-dir*
 	   :defhandler
 	   :set-dispatch-table!
+	   :defhandler*
+	   :set-dispatch-table!*
+	   :set-subdomains
 	   :start
 	   :stop))
 
@@ -32,10 +40,16 @@
 (defvar *socket-stream* nil)
 (defvar *listener-lock* (make-lock :name "listener-lock"))
 (defvar *active-listeners* nil)
-(defvar *host* "localhost")
+(defvar *domain* nil)
+(defvar *subdomains* nil)
 (defvar *socket-process* nil)
 (defvar *socket-process-80* nil)
 (defvar *dispatch-table* nil)
+;(defvar *all-dispatch-table* (make-hash-table :test #'equal))
+;(defvar *all-error-dispatch-table* (make-hash-table :test #'equal))
+(defvar *all-dispatch-table* `(("" . ,(make-hash-table :test #'equal))))
+(defvar *all-error-dispatch-table* `(("" . ,(make-hash-table :test #'equal))))
+(defvar *notfound-handler* "not-found")
 
 (defvar *status-code-database*
   '(
@@ -93,6 +107,11 @@
   (get-assoc-value code code-db))
 
 ;;;; Main web server functions/macros
+(defun build-subdomain (&optional (subdom ""))  
+  (if (equal subdom "")
+      *domain*
+      (concatenate 'string subdom "." *domain*)))
+
 (defmacro with-open-socket ((var socket) &body body)
   `(let ((,var ,socket))
      (unwind-protect
@@ -153,10 +172,20 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
      (hash-table (setf (gethash ,path ,table) ,fn))
      (t (error "~A type not yet supported!" ,table))))
 
+(defmacro helper-set!* (host path fn table)
+  `(setf (gethash ,path
+		  (cdr (assoc ,host ,table :test #'equal)))
+	 ,fn))
+
 (defmacro set-dispatch-table! (path fn status)
   (if (equal status "success")
       `(helper-set! ,path ,fn *dispatch-table*)
       `(helper-set! ,path ,fn *error-dispatch-table*)))
+
+(defun set-dispatch-table!* (host path fn status)
+  (if (equal status "success")
+      (helper-set!* host path fn *all-dispatch-table*)
+      (helper-set!* host path fn *all-error-dispatch-table*)))
 
 (defmacro defhandler ((path &key (doctypep t)
 			    (content-type "text/html")
@@ -167,6 +196,34 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
 		   (subseq ,path 1)
 		   ,path)))     
        (set-dispatch-table!
+	path
+	(lambda (stream headers params)
+	    (declare (ignorable headers params))
+	    (print-resp-header stream
+	     ,status :http-ver (get-assoc-value "HTTP-VER" headers)
+	     :content-type ,content-type)
+	    (terpri stream)
+	    (cond ((equal ,content-type "text/html")
+		   (progn
+		     (when ,doctypep
+		       (progn
+			 (format stream "~A~%"
+				 "<!DOCTYPE html>"))) ; HTML 5
+		     (format stream "~A" ,@body)))
+		  ((equal ,content-type "lambda")
+		   ,@body)))
+	,status)))
+
+(defmacro defhandler* ((path &key (host "") (doctypep t)
+			    (content-type "text/html")
+			    (status "success"))
+		      &body body)
+  `(let ((path (if (and (not (zerop (length ,path)))
+			(equal (subseq ,path 0 1) "/"))
+		   (subseq ,path 1)
+		   ,path)))     
+     (set-dispatch-table!*
+      ,(build-subdomain host)
 	path
 	(lambda (stream headers params)
 	    (declare (ignorable headers params))
@@ -283,8 +340,11 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 
 (defun print-error-resp (stream headers params)
   (print "Invalid Request | Returned 404.html page")
-  (funcall (get-assoc-value "not-found" *error-dispatch-table*)
-	   stream headers params))
+  (let* ((lst-handler
+	     (get-assoc-value *domain*
+			      *all-error-dispatch-table*))
+	 (handler (gethash *notfound-handler* lst-handler)))
+    (funcall handler stream headers params)))
 
 (defun print-resp-body-file (stream path accept-type)
   ;;(declare (ignore content-type))  ; for now
@@ -315,21 +375,23 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 ;;; FIND-REQ-HANDLER takes a path as argument and returns a lambda
 ;;; function of two parameters.
 ;;; It might be a pattern matcher, which matches a path to a handler.
-(defun find-req-handler (path)
+(defun find-req-handler (path host)
   "Return the request handler that matches the given `path'."
   ;; Look up first into `*dispatch-table'. If handler is not found
   ;; (value is NIL), then look up into `*error-dispatch-table'.
   ;; When handler is still not found, return the `not-found' handler.
-  (let ((handler (get-assoc-value path *dispatch-table*)))
-    (when (not handler)
-      (setf handler (get-assoc-value path *error-dispatch-table*)))
+  (let ((lst-handler (get-assoc-value host *all-dispatch-table*))
+	(flag nil)
+	(handler nil))
+    (when lst-handler
+      (setf handler (gethash path lst-handler)))
     handler))
 
-(defun get-resource (stream path headers params)
+(defun get-resource (stream path host headers params)
   (let* ((content-type (get-assoc-value "CONTENT-TYPE" headers))
 	 (accept (car (string-split (get-assoc-value "ACCEPT" headers)
 				    "," :recursive-p nil)))
-	 (handler (find-req-handler path)))
+	 (handler (find-req-handler path host)))
     (cond (handler (funcall handler stream headers params))
 	  ((and (or (static-p accept) (static-p content-type))
 		(print-static-resp stream accept path headers)))
@@ -389,11 +451,13 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		     (print "Bad request")
 		     (let ((req-type
 			    (get-assoc-value "REQ-TYPE"
+					     headers))		   
+			   (host (get-assoc-value "HOST"
 					     headers)))
-		       ;;(print headers)
+		       (print headers)
 		       (cond ((or (equal req-type "GET")
 				  (equal req-type "POST"))
-			      (get-resource stream path
+			      (get-resource stream path host
 					    headers params))
 			     (t
 			      (print "/!\\ Request type not yet supported.")))))
@@ -479,7 +543,26 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	    (close socket)))
       (print-error-and-continue (ex)
 	(format t "~&/!\\ Error~%: ~A" ex)
-	(print "Execution continues...")))))		 
+	(print "Execution continues...")))))
+
+(defun format-subdomain ()  
+  (let ((sd (mapcar #'(lambda (s)
+			(concatenate 'string s "." *domain*))
+		    *subdomains*)))
+    (setf *subdomains* sd)))
+
+(defun set-subdomains (lst-sub)
+  (setf *subdomains* lst-sub)
+  (format-subdomain)
+  (push *domain* *subdomains*)
+  (setf *all-dispatch-table*
+	(mapcar #'(lambda (s)
+		    (cons s (make-hash-table :test #'equal)))
+		*subdomains*))
+  (setf *all-error-dispatch-table*
+	(mapcar #'(lambda (s)
+		    (cons s (make-hash-table :test #'equal)))
+		*subdomains*)))
 
 (defun start (domain &key cert privkey)
   ;; Create a parallel thread (or process)
