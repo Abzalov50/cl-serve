@@ -8,17 +8,13 @@
 	   :*socket*
 	   :*socket-80*
 	   :*host*
-	   :*dispatch-table*
-	   :*error-dispatch-table*
 	   :*all-dispatch-table*
-	   :*all-error-dispatch-table*
+	   :*error-dispatch-table*
 	   :*status-code-database*
 	   :*project-dir*
 	   :*static-dir*
 	   :defhandler
 	   :set-dispatch-table!
-	   :defhandler*
-	   :set-dispatch-table!*
 	   :set-subdomains
 	   :start
 	   :stop))
@@ -45,10 +41,10 @@
 (defvar *socket-process* nil)
 (defvar *socket-process-80* nil)
 (defvar *dispatch-table* nil)
-;(defvar *all-dispatch-table* (make-hash-table :test #'equal))
-;(defvar *all-error-dispatch-table* (make-hash-table :test #'equal))
-(defvar *all-dispatch-table* `(("" . ,(make-hash-table :test #'equal))))
-(defvar *all-error-dispatch-table* `(("" . ,(make-hash-table :test #'equal))))
+;(defvar *dispatch-table* (make-hash-table :test #'equal))
+;(defvar *error-dispatch-table* (make-hash-table :test #'equal))
+(defvar *dispatch-table* `(("" . ,(make-hash-table :test #'equal))))
+(defvar *error-dispatch-table* `(("" . ,(make-hash-table :test #'equal))))
 (defvar *notfound-handler* "not-found")
 
 (defvar *status-code-database*
@@ -165,29 +161,17 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
 		     (t (rec (cdr lst) (cons (car lst) result)))))))
       (coerce (rec pval-lst nil) 'string))))
 
-(defmacro helper-set! (path fn table)
-  `(typecase ,table
-     ((or null list)  ; It is an assoc list
-      (push (cons ,path ,fn) ,table))  ; update alist
-     (hash-table (setf (gethash ,path ,table) ,fn))
-     (t (error "~A type not yet supported!" ,table))))
-
-(defmacro helper-set!* (host path fn table)
+(defmacro helper-set! (host path fn table)
   `(setf (gethash ,path
 		  (cdr (assoc ,host ,table :test #'equal)))
 	 ,fn))
 
-(defmacro set-dispatch-table! (path fn status)
+(defun set-dispatch-table! (host path fn status)
   (if (equal status "success")
-      `(helper-set! ,path ,fn *dispatch-table*)
-      `(helper-set! ,path ,fn *error-dispatch-table*)))
+      (helper-set! host path fn *dispatch-table*)
+      (helper-set! host path fn *error-dispatch-table*)))
 
-(defun set-dispatch-table!* (host path fn status)
-  (if (equal status "success")
-      (helper-set!* host path fn *all-dispatch-table*)
-      (helper-set!* host path fn *all-error-dispatch-table*)))
-
-(defmacro defhandler ((path &key (doctypep t)
+(defmacro defhandler ((path &key (host "") (doctypep t)
 			    (content-type "text/html")
 			    (status "success"))
 		      &body body)
@@ -195,34 +179,7 @@ e.g: (parse-uri-pvalue \"arnold%20le+messie\") => \"arnold le messie\""
 			(equal (subseq ,path 0 1) "/"))
 		   (subseq ,path 1)
 		   ,path)))     
-       (set-dispatch-table!
-	path
-	(lambda (stream headers params)
-	    (declare (ignorable headers params))
-	    (print-resp-header stream
-	     ,status :http-ver (get-assoc-value "HTTP-VER" headers)
-	     :content-type ,content-type)
-	    (terpri stream)
-	    (cond ((equal ,content-type "text/html")
-		   (progn
-		     (when ,doctypep
-		       (progn
-			 (format stream "~A~%"
-				 "<!DOCTYPE html>"))) ; HTML 5
-		     (format stream "~A" ,@body)))
-		  ((equal ,content-type "lambda")
-		   ,@body)))
-	,status)))
-
-(defmacro defhandler* ((path &key (host "") (doctypep t)
-			    (content-type "text/html")
-			    (status "success"))
-		      &body body)
-  `(let ((path (if (and (not (zerop (length ,path)))
-			(equal (subseq ,path 0 1) "/"))
-		   (subseq ,path 1)
-		   ,path)))     
-     (set-dispatch-table!*
+     (set-dispatch-table!
       ,(build-subdomain host)
 	path
 	(lambda (stream headers params)
@@ -342,7 +299,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
   (print "Invalid Request | Returned 404.html page")
   (let* ((lst-handler
 	     (get-assoc-value *domain*
-			      *all-error-dispatch-table*))
+			      *error-dispatch-table*))
 	 (handler (gethash *notfound-handler* lst-handler)))
     (funcall handler stream headers params)))
 
@@ -380,7 +337,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
   ;; Look up first into `*dispatch-table'. If handler is not found
   ;; (value is NIL), then look up into `*error-dispatch-table'.
   ;; When handler is still not found, return the `not-found' handler.
-  (let ((lst-handler (get-assoc-value host *all-dispatch-table*))
+  (let ((lst-handler (get-assoc-value host *dispatch-table*))
 	(flag nil)
 	(handler nil))
     (when lst-handler
@@ -454,7 +411,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 					     headers))		   
 			   (host (get-assoc-value "HOST"
 					     headers)))
-		       (print headers)
+		       ;(print headers)
 		       (cond ((or (equal req-type "GET")
 				  (equal req-type "POST"))
 			      (get-resource stream path host
@@ -555,11 +512,11 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
   (setf *subdomains* lst-sub)
   (format-subdomain)
   (push *domain* *subdomains*)
-  (setf *all-dispatch-table*
+  (setf *dispatch-table*
 	(mapcar #'(lambda (s)
 		    (cons s (make-hash-table :test #'equal)))
 		*subdomains*))
-  (setf *all-error-dispatch-table*
+  (setf *error-dispatch-table*
 	(mapcar #'(lambda (s)
 		    (cons s (make-hash-table :test #'equal)))
 		*subdomains*)))
