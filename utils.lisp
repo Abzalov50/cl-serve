@@ -1,5 +1,5 @@
 (defpackage :cl-serve.utils
-  (:use :cl :babel)
+  (:use :cl :babel :cl-smtp :arnesi :cl-mime)
   (:export :get-assoc-value
 	   :string-split
 	   :parse-key-val-string
@@ -11,7 +11,8 @@
 	   :copy-text-file
 	   :dotted-pair-p
 	   :safe-read-line
-	   :read-line-crlf))
+	   :read-line-crlf
+	   :get-email))
 
 (in-package :cl-serve.utils)
 
@@ -127,3 +128,12 @@ e.g: (parse-key-val-string (concatenate 'string \"name:arnold\" (coerce '(#\Newl
        finally
 	 (return
 	   (if empty nil (get-output-stream-string s))))))
+
+;;; Email
+(defun get-email (text recipients &key from metadata)
+  "Generic send SMTP mail with some `text' `from' a domain email to RECIPIENTS"
+  (when (not from)
+    (setf from (concatenate 'string "visitor@" cl-serve:*domain*)))
+  (let ((text (format nil "~A~%~%-------- Métadonnées:~%~A"
+		      text metadata)))
+    (cl-smtp:send-email "localhost" from recipients "Contact" text)))

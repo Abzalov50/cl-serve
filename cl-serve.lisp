@@ -2,6 +2,7 @@
   (:nicknames :websrv)
   (:use :cl :port :cl-serve.utils :cl-fad :lisp-binary :cl+ssl :flexi-streams)
   (:export :*domain*
+	   :*domain-ip*
 	   :*subdomains*
 	   :*notfound-handler*
 	   :*socket-stream*
@@ -37,6 +38,7 @@
 (defvar *listener-lock* (make-lock :name "listener-lock"))
 (defvar *active-listeners* nil)
 (defvar *domain* nil)
+(defvar *domain-ip* nil)
 (defvar *subdomains* nil)
 (defvar *socket-process* nil)
 (defvar *socket-process-80* nil)
@@ -107,6 +109,14 @@
   (if (equal subdom "")
       *domain*
       (concatenate 'string subdom "." *domain*)))
+
+(defun map-host->name (host)
+  (if (or (equal (concatenate 'string "www." *domain*) host)
+	  (equal (concatenate 'string *domain-ip* ":80") host)
+	  (equal (concatenate 'string *domain-ip* ":443") host)
+	  (equal *domain-ip* host))
+      *domain*
+      host))
 
 (defmacro with-open-socket ((var socket) &body body)
   `(let ((,var ,socket))
@@ -406,12 +416,13 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		 ;; WRITE RESPONSE TO STREAM
 		 (if (eq error-code 'error)
 		     (print "Bad request")
-		     (let ((req-type
-			    (get-assoc-value "REQ-TYPE"
-					     headers))		   
-			   (host (get-assoc-value "HOST"
-					     headers)))
-		       ;(print headers)
+		     (let* ((req-type
+			     (get-assoc-value "REQ-TYPE"
+					      headers))
+			    (host (get-assoc-value "HOST"
+						   headers))
+			    (host (map-host->name host)))
+		       (print headers)
 		       (cond ((or (equal req-type "GET")
 				  (equal req-type "POST"))
 			      (get-resource stream path host
