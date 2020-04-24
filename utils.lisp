@@ -1,5 +1,5 @@
 (defpackage :cl-serve.utils
-  (:use :cl :babel :cl-smtp :arnesi :cl-mime)
+  (:use :cl :babel :cl-smtp)
   (:export :get-assoc-value
 	   :string-split
 	   :parse-key-val-string
