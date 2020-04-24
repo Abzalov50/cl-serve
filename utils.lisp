@@ -130,10 +130,8 @@ e.g: (parse-key-val-string (concatenate 'string \"name:arnold\" (coerce '(#\Newl
 	   (if empty nil (get-output-stream-string s))))))
 
 ;;; Email
-(defun get-email (text recipients &key from metadata)
+(defun get-email (text from recipients &key metadata)
   "Generic send SMTP mail with some `text' `from' a domain email to RECIPIENTS"
-  (when (not from)
-    (setf from (concatenate 'string "visitor@" cl-serve:*domain*)))
   (let ((text (format nil "~A~%~%-------- Métadonnées:~%~A"
 		      text metadata)))
     (cl-smtp:send-email "localhost" from recipients "Contact" text)))
