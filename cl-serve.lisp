@@ -8,7 +8,6 @@
 	   :*socket-stream*
 	   :*socket*
 	   :*socket-80*
-	   :*host*
 	   :*all-dispatch-table*
 	   :*error-dispatch-table*
 	   :*status-code-database*
@@ -100,11 +99,14 @@
 (defvar *project-dir* nil)
 (defvar *static-dir* nil)
 
+;;;; Main web server functions/macros
+(defun ssl-connection-p (stream)
+  (cl+ssl::ssl-stream-p stream))
+
 (defun get-statuscode-string
     (code &optional (code-db *status-code-database*))
   (get-assoc-value code code-db))
 
-;;;; Main web server functions/macros
 (defun build-subdomain (&optional (subdom ""))  
   (if (equal subdom "")
       *domain*
@@ -460,7 +462,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
     ;;(socket-server-close *socket-serv*))
     )
 
-(defun run-listener-80 (domain)
+(defun run-listener-80 ()
   (setf *socket-serv-80* (open-socket-server 80))
   ;;(unwind-protect
     (loop
@@ -473,14 +475,14 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		   (socket-host/port socket))
 	   (push
 	    (make-process "redirect-to-443"
-			  #'redirect-to-443 socket domain)
+			  #'redirect-to-443 socket)
 	    *proc-80*)
 	   (when (= 100 (length *proc-80*))
 	     (setf *proc-80* nil)))))
     ;;(socket-server-close *socket-serv-80*))
     )
 
-(defun redirect-to-443 (socket domain)
+(defun redirect-to-443 (socket)
   (block main-loop
     (restart-case
 	(handler-bind
@@ -497,18 +499,21 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 		  (invoke-restart
 		   'print-error-and-continue ex))))
 	  (unwind-protect
-	       (multiple-value-bind (error-code url req-type http-ver)
-		   (parse-req-init-line socket)
-		 (let ((path (car url))
-		       (http-ver (string-right-trim
-				  '(#\Return) http-ver)))
+	       (multiple-value-bind (error-code path headers params)
+		   (parse-request socket)
+		 (declare (ignore params))
+		 (let* ((req-type (get-assoc-value "REQ-TYPE" headers))
+			(http-ver (get-assoc-value "HTTP-VER" headers))
+			(http-ver (string-right-trim
+				   '(#\Return) http-ver))
+			(host (get-assoc-value "HOST" headers)))
 		   (when (equal req-type "GET")
 		     (print "Redirect to HTTPS:443...")
 		     (format socket "~A ~A~%"
 			     http-ver "301 Moved Permanently")
 		     (format socket
 			     "Location: https://~A/~A~%"
-			     domain path)		     
+			     host path)		     
 		     (force-output socket))))
 	    (close socket)))
       (print-error-and-continue (ex)
@@ -538,7 +543,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
   ;; Create a parallel thread (or process)
   ;; where to listen to request and response.
   (make-process "listener" #'run-listener :cert cert :privkey privkey)
-  (make-process "listener-80" #'run-listener-80 domain))
+  (make-process "listener-80" #'run-listener-80))
 
 (defun stop ()
   "Stop the given `socket', otherwise stop the current one, defined by the global variable *socket*."
