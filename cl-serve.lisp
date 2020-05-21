@@ -437,7 +437,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 
 (defun run-listener (&key cert privkey)
   (setf *socket-serv* (open-socket-server 443))
-  (unwind-protect
+  ;;(unwind-protect
     (loop
        (let* ((socket-stream (socket-accept *socket-serv*))
 	      (socket
@@ -457,11 +457,12 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	    *proc*)
 	   (when (= 100 (length *proc*))
 	     (setf *proc* nil)))))
-    (socket-server-close *socket-serv*)))
+    ;;(socket-server-close *socket-serv*))
+    )
 
 (defun run-listener-80 (domain)
   (setf *socket-serv-80* (open-socket-server 80))
-  (unwind-protect
+  ;;(unwind-protect
     (loop
        (let ((socket (socket-accept *socket-serv-80*)))
 	 (when socket
@@ -476,7 +477,8 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	    *proc-80*)
 	   (when (= 100 (length *proc-80*))
 	     (setf *proc-80* nil)))))
-    (socket-server-close *socket-serv-80*)))
+    ;;(socket-server-close *socket-serv-80*))
+    )
 
 (defun redirect-to-443 (socket domain)
   (block main-loop
