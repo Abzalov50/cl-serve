@@ -252,12 +252,12 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	     (make-sym-val-pair
 	      hdr #'(lambda (x) (string-trim '(#\Space #\Return) x))))
 	   (rec (res)
-	     (let ((c (peek-char nil stream)))
+	     (let ((c (peek-char nil stream nil)))
 	       (cond ((find c '(#\Newline #\Return #\Linefeed)
 			    :test #'char=)
 		      (read-line stream nil nil)
 		      (values 'success res))
-		     ((not (alpha-char-p c))
+		     ((or nil (not (alpha-char-p c)))
 		      (signal 'not-decodable-char)
 		      (values 'error nil))
 		     (t
