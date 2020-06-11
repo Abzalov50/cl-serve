@@ -1,6 +1,7 @@
 (defpackage :cl-serve.utils
   (:use :cl :babel :cl-smtp)
   (:export :get-assoc-value
+	   :notnull
 	   :string-split
 	   :parse-key-val-string
 	   :make-sym-val-pair
@@ -17,6 +18,9 @@
 (in-package :cl-serve.utils)
 
 ;;;; Helper functions
+(defun notnull (x)
+  (not (null x)))
+
 (defun get-assoc-value (key alist)
   "Given `alist', return the value corresponding to the given `key', if it exists, or return NIL otherwise. Each element of the alist must be a dotted-pair.
 e.g: (get-assoc-value 'name '((age . 28) (name . arnold)))

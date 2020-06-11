@@ -6,8 +6,6 @@
 	   :*subdomains*
 	   :*notfound-handler*
 	   :*socket-stream*
-	   :*socket*
-	   :*socket-80*
 	   :*all-dispatch-table*
 	   :*error-dispatch-table*
 	   :*status-code-database*
@@ -29,8 +27,6 @@
 ;;; (print stream)
 
 ;;;; Global parameters
-(defvar *socket* nil)
-(defvar *socket-80* nil)
 (defvar *proc-80* nil)
 (defvar *proc* nil)
 (defvar *socket-stream* nil)
@@ -253,21 +249,24 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	      hdr #'(lambda (x) (string-trim '(#\Space #\Return) x))))
 	   (rec (res)
 	     (let ((c (peek-char nil stream nil)))
-	       (cond ((or nil (not (alpha-char-p c)))
-		      ;;(signal 'not-decodable-char)
-		      (values 'error nil))
-		     ((find c '(#\Newline #\Return #\Linefeed)
-			    :test #'char=)
-		      (read-line stream nil nil)
-		      (values 'success res))
-		     (t
-		      (let* ((hline (read-line stream nil ""))
-			     (hdr-lst (string-split hline #\:
-						    :recursive-p nil)))
-			(if (not (pairp hdr-lst))
-			    (values 'success res)
-			    (rec (cons (parse-one-line hdr-lst)
-				       res)))))))))
+	       (cond 
+		 ((and (notnull c)
+		       (find c '(#\Newline #\Return #\Linefeed)
+			     :test #'char=))
+		  (read-line stream nil nil)
+		  (values 'success res))
+		 ((or (null c) (not (alpha-char-p c)))
+		  ;;(signal 'not-decodable-char)
+		  (values 'error nil))
+		 (t
+		  ;;(print "OK")
+		  (let* ((hline (read-line stream nil ""))
+			 (hdr-lst (string-split hline #\:
+						:recursive-p nil)))
+		    (if (not (pairp hdr-lst))
+			(values 'success res)
+			(rec (cons (parse-one-line hdr-lst)
+				   res)))))))))
     (rec nil)))
 
 ;;; Request body contains user-entered data
