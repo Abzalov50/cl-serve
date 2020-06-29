@@ -445,12 +445,13 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	       (ignore-errors
 		 (cl+ssl:make-ssl-server-stream
 		  socket-stream
-		  :external-format '(:utf-8 :eol-style :crlf)
+		  :external-format '(:iso-8859-1 :eol-style :crlf)
 		  :certificate (namestring cert)
 		  :key (namestring privkey)))))
 	 (when socket
 	   (terpri)
 	   (print "#################################")
+	   hh
 	   (print "Running Listener...")
 	   (push
 	    (make-process "process-request"
@@ -458,6 +459,7 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	    *proc*)
 	   (when (= 100 (length *proc*))
 	     (setf *proc* nil)))))
+    (print "ENTERED")
     ;;(socket-server-close *socket-serv*))
     )
 
