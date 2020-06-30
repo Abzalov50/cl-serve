@@ -451,7 +451,6 @@ e.g: (parse-req-headers (concatenate 'string \"name:arnold\" (coerce '(#\Newline
 	 (when socket
 	   (terpri)
 	   (print "#################################")
-	   hh
 	   (print "Running Listener...")
 	   (push
 	    (make-process "process-request"
