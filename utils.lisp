@@ -1,6 +1,8 @@
 (defpackage :cl-serve.utils
   (:use :cl :babel :cl-smtp)
+  (:import-from :alexandria :switch)
   (:export :get-assoc-value
+	   :binary-file-p
 	   :notnull
 	   :string-split
 	   :parse-key-val-string
@@ -108,9 +110,28 @@ e.g: (parse-key-val-string (concatenate 'string \"name:arnold\" (coerce '(#\Newl
 	   while (plusp bytes-read)
 	   do (write-sequence buffer to-stream :end bytes-read))))))
 
-(defun copy-text-file (from-path to-stream)
-  (with-open-file (stream from-path :direction :input)
-    (cl-fad:copy-stream stream to-stream)))
+(defun copy-text-file (from-path to-stream
+		       &key (content-encoding "gzip"))
+  (with-open-file (stream from-path :if-does-not-exist nil)
+    (if (or (equal content-encoding "gzip")
+	    (equal content-encoding "deflate"))
+	(let ((file-in-octets (flexi-streams:string-to-octets
+			       (with-output-to-string (s)
+				 (when stream
+				   (loop for line = (read-line
+						     stream nil)
+				      while line
+				      do (format s "~a~%" line))))
+			       :external-format 'utf-8)))
+	  (if (equal content-encoding "gzip")
+	      (write-sequence (salza2:compress-data
+			       file-in-octets 'salza2:gzip-compressor)
+			      to-stream)
+	      (write-sequence (salza2:compress-data
+			       file-in-octets
+			       'salza2:deflate-compressor)
+			      to-stream)))
+	(cl-fad:copy-stream stream to-stream))))
 
 (defun safe-read-line (stream)
   (coerce
@@ -132,6 +153,28 @@ e.g: (parse-key-val-string (concatenate 'string \"name:arnold\" (coerce '(#\Newl
        finally
 	 (return
 	   (if empty nil (get-output-stream-string s))))))
+
+(defun binary-file-p (content-type)
+  (or (equal content-type "image/webp")
+      (equal content-type "image/webm")
+      (equal content-type "image/bmp")
+      (equal content-type "image/jpeg")
+      (equal content-type "image/gif")
+      (equal content-type "image/png")
+      (equal content-type "image/tiff")
+      (equal content-type "image/svg+xml")
+      (equal content-type "audio/aac")
+      (equal content-type "audio/midi")
+      (equal content-type "audio/ogg")
+      (equal content-type "audio/webm")
+      (equal content-type "audio/3gpp")
+      (equal content-type "audio/3gpp2")
+      (equal content-type "audio/x-wav")
+      (equal content-type "video/mpeg")
+      (equal content-type "video/ogg")
+      (equal content-type "video/webm")
+      (equal content-type "video/3gpp2")
+      (equal content-type "video/x-msvideo")))
 
 ;;; Email
 (defun get-email (text from recipients &key metadata)

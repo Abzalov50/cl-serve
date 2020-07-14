@@ -12,4 +12,4 @@
 		      :depends-on ("utils")))
   :depends-on (port cl-who cl-fad lisp-binary
 		    babel cl+ssl flexi-streams
-		    cl-smtp))
+		    cl-smtp salza2 alexandria))
